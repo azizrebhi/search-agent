@@ -7,54 +7,65 @@ import time
 # Page Config
 # -----------------------------
 st.set_page_config(
-    page_title="🧠 AI Essay Writer",
-    page_icon="🧠",
+    page_title="AI Essay Writer",
+    page_icon="📝",
     layout="wide",
 )
 
 # -----------------------------
-# Custom CSS for Modern Look
+# Custom CSS for Professional Look
 # -----------------------------
 st.markdown("""
 <style>
 /* Main container padding */
 div.block-container {
-    padding: 2rem 4rem 2rem 4rem;
+    padding: 2rem 4rem;
 }
 
-/* Header styling */
+/* Headers */
 h1, h2, h3, h4 {
-    color: #333333;
+    color: #1F2937; /* dark gray */
+    font-family: "Segoe UI", sans-serif;
 }
 
 /* Buttons */
 .stButton>button {
-    background-color: #4CAF50;
+    background-color: #2563EB; /* blue */
     color: white;
-    font-weight: bold;
-    border-radius: 8px;
-    padding: 0.5rem 1rem;
+    font-weight: 600;
+    border-radius: 6px;
+    padding: 0.5rem 1.2rem;
+    font-size: 1rem;
 }
 .stButton>button:hover {
-    background-color: #45a049;
+    background-color: #1D4ED8; /* darker blue */
 }
 
 /* Progress bar color */
 .stProgress > div > div > div > div {
-    background-color: #4CAF50;
+    background-color: #2563EB;
 }
 
 /* Card styling */
 div[data-testid="stExpander"] {
-    background-color: #f8f9fa;
-    border-radius: 10px;
+    background-color: #F3F4F6; /* light gray */
+    border-radius: 8px;
     padding: 1rem;
-    box-shadow: 0px 3px 6px rgba(0,0,0,0.1);
+    box-shadow: 0px 2px 4px rgba(0,0,0,0.08);
 }
 
 /* Text area styling */
 textarea {
-    border-radius: 8px;
+    border-radius: 6px;
+    padding: 0.5rem;
+    border: 1px solid #D1D5DB;
+    font-family: "Segoe UI", sans-serif;
+}
+
+/* Markdown code block */
+code, pre {
+    background-color: #F9FAFB;
+    border-radius: 6px;
     padding: 0.5rem;
 }
 </style>
@@ -63,9 +74,9 @@ textarea {
 # -----------------------------
 # Header Section
 # -----------------------------
-st.title("🧠 AI Essay Writer Assistant")
+st.title("AI Essay Writer Assistant")
 st.markdown(
-    "Write better essays with AI. Powered by LangGraph + OpenAI + Tavily Search."
+    "Generate well-structured and refined essays with AI. Powered by LangGraph + OpenAI + Tavily Search."
 )
 st.divider()
 
@@ -73,7 +84,7 @@ st.divider()
 # Input Section
 # -----------------------------
 with st.container():
-    st.subheader("📝 Enter Your Essay Topic")
+    st.subheader("Enter Your Essay Topic")
     topic_col, revision_col = st.columns([3, 1])
 
     with topic_col:
@@ -88,18 +99,17 @@ with st.container():
             "Refinement Rounds", 1, 5, 2
         )
 
-    run_button = st.button("🚀 Generate Essay")
+    run_button = st.button("Generate Essay")
 
 # -----------------------------
 # Workflow Execution
 # -----------------------------
 if run_button:
     if not task.strip():
-        st.warning("⚠️ Please enter a topic first.")
+        st.warning("Please enter a topic first.")
         st.stop()
 
-    # Info Box
-    st.info("🔄 Running AI essay workflow... this may take a minute.")
+    st.info("Running AI essay workflow... this may take a minute.")
 
     # Initialize placeholders
     progress_bar = st.progress(0)
@@ -118,13 +128,13 @@ if run_button:
         "content": []
     }
 
-    # Step definitions for display
+    # Step definitions
     step_names = {
-        "planner": "📘 Planning Essay Outline",
-        "research_plan": "🔍 Researching Background Info",
-        "generate": "✍️ Writing / Improving Draft",
-        "reflect": "🧠 Critiquing Draft",
-        "research_critique": "📚 Additional Research"
+        "planner": "Planning Essay Outline",
+        "research_plan": "Researching Background Information",
+        "generate": "Writing / Improving Draft",
+        "reflect": "Critiquing Draft",
+        "research_critique": "Additional Research"
     }
 
     step_count = 0
@@ -141,31 +151,31 @@ if run_button:
             progress_bar.progress(min(step_count / total_steps, 1.0))
             time.sleep(0.2)
 
-            # Display step in a "card"
+            # Display step in a card
             with workflow_container:
-                with st.expander(f"✅ {label}", expanded=True):
+                with st.expander(f"{label}", expanded=True):
                     st.markdown(f"```markdown\n{str(value)}\n```")
 
-            # Capture draft if exists
+            # Capture draft
             if "draft" in value:
                 essay_output = value["draft"]
 
     # Complete
     progress_bar.progress(1.0)
-    st.success("🎉 Essay generation completed!")
+    st.success("Essay generation completed!")
 
     # -----------------------------
     # Final Essay Display
     # -----------------------------
-    st.markdown("## 🏁 Final Essay")
+    st.markdown("## Final Essay")
     st.markdown(f"```markdown\n{essay_output}\n```")
 
     st.download_button(
-        label="📄 Download Essay as Markdown",
+        label="Download Essay as Markdown",
         data=essay_output,
         file_name="essay.md",
         mime="text/markdown"
     )
 
 else:
-    st.info("👆 Enter a topic and click **Generate Essay** to begin.")
+    st.info("Enter a topic and click Generate Essay to begin.")
