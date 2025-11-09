@@ -1,0 +1,7 @@
+streamlit
+langgraph
+langchain-openai
+tavily
+supabase
+python-dotenv
+psycopg[binary]
