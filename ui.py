@@ -2,6 +2,7 @@ import streamlit as st
 from main import graph
 import time
 import json
+from fpdf import FPDF
 
 # -----------------------------
 # Page Config
@@ -23,10 +24,10 @@ h1, h2, h3, h4 { color: #1F2937; font-family: "Segoe UI", sans-serif; }
 .stButton>button:hover { background-color: #1D4ED8; }
 .stProgress > div > div > div > div { background-color: #2563EB; }
 
-/* Fix Expander Header Text */
+/* Expander Header */
 div[data-testid="stExpander"] > button {
-    background-color: #2563EB !important; /* Dark blue */
-    color: white !important;              /* White text */
+    background-color: #2563EB !important;
+    color: white !important;
     font-weight: 600;
     border-radius: 6px;
     padding: 0.5rem 1rem;
@@ -139,18 +140,14 @@ if run_button:
     # -----------------------------
     st.markdown("## Final Essay")
     st.markdown(essay_output, unsafe_allow_html=True)
-    
+
     # -----------------------------
     # Sources Display
     # -----------------------------
-            # -----------------------------
-# Sources Display
-# -----------------------------
     if collected_sources:
         st.markdown("## Sources")
-
-    # Deduplicate by URL
-        unique_sources = {s.get("url", s.get("title", str(i))): s for i, s in enumerate(collected_sources)}.values()
+        # Deduplicate by URL
+        unique_sources = {s.get("url", f"source_{i}"): s for i, s in enumerate(collected_sources)}.values()
 
         for src in unique_sources:
             if not isinstance(src, dict):
@@ -158,27 +155,34 @@ if run_button:
             url = src.get("url", "Unknown Source")
             title = src.get("title", None)
             snippet = src.get("content", "")
-
-        # Clean snippet: remove line breaks and extra whitespace
             snippet_clean = " ".join(snippet.split())
             snippet_preview = snippet_clean[:150] + "..." if len(snippet_clean) > 150 else snippet_clean
 
             if title:
-               st.markdown(f"- **[{title}]({url})** — {snippet_preview}")
+                st.markdown(f"- **[{title}]({url})** — {snippet_preview}")
             else:
                 st.markdown(f"- {url} — {snippet_preview}")
 
-        
+    # -----------------------------
+    # Download PDF Button
+    # -----------------------------
+    if essay_output:
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.set_font("Arial", size=12)
+        for line in essay_output.split("\n"):
+            pdf.multi_cell(0, 8, line)
 
-    # -----------------------------
-    # Download Button
-    # -----------------------------
-    st.download_button(
-        label="Download Essay as Markdown",
-        data=essay_output,
-        file_name="essay.md",
-        mime="text/markdown"
-    )
+        # Convert PDF to bytes
+        pdf_bytes = pdf.output(dest='S').encode('latin1')
+
+        st.download_button(
+            label="Download Essay as PDF",
+            data=pdf_bytes,
+            file_name="essay.pdf",
+            mime="application/pdf"
+        )
 
 else:
     st.info("Enter a topic and click Generate Essay to begin.")

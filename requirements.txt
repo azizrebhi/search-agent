@@ -5,3 +5,4 @@ tavily
 supabase
 python-dotenv
 psycopg[binary]
+fpdf
