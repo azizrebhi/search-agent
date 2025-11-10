@@ -1,7 +1,7 @@
 import streamlit as st
 from main import graph
-from langchain_core.messages import HumanMessage
 import time
+import json
 
 # -----------------------------
 # Page Config
@@ -13,61 +13,34 @@ st.set_page_config(
 )
 
 # -----------------------------
-# Custom CSS for Professional Look
+# Custom CSS
 # -----------------------------
 st.markdown("""
 <style>
-/* Main container padding */
-div.block-container {
-    padding: 2rem 4rem;
-}
+div.block-container { padding: 2rem 4rem; }
+h1, h2, h3, h4 { color: #1F2937; font-family: "Segoe UI", sans-serif; }
+.stButton>button { background-color: #2563EB; color: white; font-weight: 600; border-radius: 6px; padding: 0.5rem 1.2rem; font-size: 1rem; }
+.stButton>button:hover { background-color: #1D4ED8; }
+.stProgress > div > div > div > div { background-color: #2563EB; }
 
-/* Headers */
-h1, h2, h3, h4 {
-    color: #1F2937; /* dark gray */
-    font-family: "Segoe UI", sans-serif;
-}
-
-/* Buttons */
-.stButton>button {
-    background-color: #2563EB; /* blue */
-    color: white;
+/* Fix Expander Header Text */
+div[data-testid="stExpander"] > button {
+    background-color: #2563EB !important; /* Dark blue */
+    color: white !important;              /* White text */
     font-weight: 600;
     border-radius: 6px;
-    padding: 0.5rem 1.2rem;
-    font-size: 1rem;
-}
-.stButton>button:hover {
-    background-color: #1D4ED8; /* darker blue */
+    padding: 0.5rem 1rem;
 }
 
-/* Progress bar color */
-.stProgress > div > div > div > div {
-    background-color: #2563EB;
-}
-
-/* Card styling */
-div[data-testid="stExpander"] {
-    background-color: #F3F4F6; /* light gray */
-    border-radius: 8px;
+/* Expander Content */
+div[data-testid="stExpander"] > div {
+    background-color: #F3F4F6 !important;
+    border-radius: 6px;
     padding: 1rem;
-    box-shadow: 0px 2px 4px rgba(0,0,0,0.08);
 }
 
-/* Text area styling */
-textarea {
-    border-radius: 6px;
-    padding: 0.5rem;
-    border: 1px solid #D1D5DB;
-    font-family: "Segoe UI", sans-serif;
-}
-
-/* Markdown code block */
-code, pre {
-    background-color: #F9FAFB;
-    border-radius: 6px;
-    padding: 0.5rem;
-}
+textarea { border-radius: 6px; padding: 0.5rem; border: 1px solid #D1D5DB; font-family: "Segoe UI", sans-serif; }
+code, pre { background-color: #F9FAFB; border-radius: 6px; padding: 0.5rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -75,9 +48,7 @@ code, pre {
 # Header Section
 # -----------------------------
 st.title("AI Essay Writer Assistant")
-st.markdown(
-    "Generate well-structured and refined essays with AI. Powered by LangGraph + OpenAI + Tavily Search."
-)
+st.markdown("Generate structured, well-formatted essays with sources.")
 st.divider()
 
 # -----------------------------
@@ -86,19 +57,16 @@ st.divider()
 with st.container():
     st.subheader("Enter Your Essay Topic")
     topic_col, revision_col = st.columns([3, 1])
-
     with topic_col:
         task = st.text_area(
             "Your topic here...",
             placeholder="Example: The impact of AI on education",
             height=120
         )
-
     with revision_col:
         max_revisions = st.slider(
             "Refinement Rounds", 1, 5, 2
         )
-
     run_button = st.button("Generate Essay")
 
 # -----------------------------
@@ -111,11 +79,12 @@ if run_button:
 
     st.info("Running AI essay workflow... this may take a minute.")
 
-    # Initialize placeholders
+    # Placeholders
     progress_bar = st.progress(0)
     progress_text = st.empty()
     workflow_container = st.container()
     essay_output = ""
+    collected_sources = []
 
     thread = {"configurable": {"thread_id": "ui-thread"}}
     state = {
@@ -125,7 +94,8 @@ if run_button:
         "plan": "",
         "draft": "",
         "critique": "",
-        "content": []
+        "content": [],
+        "sources": []
     }
 
     # Step definitions
@@ -145,20 +115,20 @@ if run_button:
         for node, value in s.items():
             step_count += 1
             label = step_names.get(node, node)
-
-            # Update progress
             progress_text.markdown(f"**{label}...**")
             progress_bar.progress(min(step_count / total_steps, 1.0))
             time.sleep(0.2)
 
-            # Display step in a card
+            # Show intermediate step in expander
             with workflow_container:
-                with st.expander(f"{label}", expanded=True):
-                    st.markdown(f"```markdown\n{str(value)}\n```")
+                with st.expander(f"{label}", expanded=False):
+                    st.markdown(f"```json\n{json.dumps(value, indent=2)}\n```")
 
-            # Capture draft
+            # Capture draft & sources
             if "draft" in value:
                 essay_output = value["draft"]
+            if "sources" in value:
+                collected_sources.extend(value["sources"])
 
     # Complete
     progress_bar.progress(1.0)
@@ -168,8 +138,41 @@ if run_button:
     # Final Essay Display
     # -----------------------------
     st.markdown("## Final Essay")
-    st.markdown(f"```markdown\n{essay_output}\n```")
+    st.markdown(essay_output, unsafe_allow_html=True)
+    
+    # -----------------------------
+    # Sources Display
+    # -----------------------------
+            # -----------------------------
+# Sources Display
+# -----------------------------
+    if collected_sources:
+        st.markdown("## Sources")
 
+    # Deduplicate by URL
+        unique_sources = {s.get("url", s.get("title", str(i))): s for i, s in enumerate(collected_sources)}.values()
+
+        for src in unique_sources:
+            if not isinstance(src, dict):
+                continue
+            url = src.get("url", "Unknown Source")
+            title = src.get("title", None)
+            snippet = src.get("content", "")
+
+        # Clean snippet: remove line breaks and extra whitespace
+            snippet_clean = " ".join(snippet.split())
+            snippet_preview = snippet_clean[:150] + "..." if len(snippet_clean) > 150 else snippet_clean
+
+            if title:
+               st.markdown(f"- **[{title}]({url})** — {snippet_preview}")
+            else:
+                st.markdown(f"- {url} — {snippet_preview}")
+
+        
+
+    # -----------------------------
+    # Download Button
+    # -----------------------------
     st.download_button(
         label="Download Essay as Markdown",
         data=essay_output,

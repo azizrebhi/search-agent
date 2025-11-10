@@ -11,6 +11,8 @@ from tavily import TavilyClient
 from typing import TypedDict, List
 import json
 from collections import ChainMap
+import time
+import httpx
 
 from supabase import create_client
 
@@ -19,11 +21,10 @@ from supabase import create_client
 # ======================================
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 TABLE_NAME = "graph_state"
 
 # ======================================
-# ✅ Supabase persistence class (HTTPS version)
+# ✅ Supabase persistence class with safe retries
 # ======================================
 class SupabaseSaver:
     def __init__(self, url, key, table_name="graph_state"):
@@ -31,26 +32,24 @@ class SupabaseSaver:
         self.table_name = table_name
 
     def _to_json_safe(self, obj):
-        """Recursively convert unsupported objects into JSON-safe types."""
         if isinstance(obj, ChainMap):
-            # Convert ChainMap to dict first
             return self._to_json_safe(dict(obj))
         elif isinstance(obj, dict):
-            # Recursively process all dict items
             return {str(k): self._to_json_safe(v) for k, v in obj.items()}
         elif isinstance(obj, (list, tuple, set)):
-            # Recursively process lists, tuples, and sets
             return [self._to_json_safe(v) for v in obj]
         elif isinstance(obj, (str, int, float, bool)) or obj is None:
             return obj
         else:
-            # Convert any other object (e.g., custom classes) to string
             return str(obj)
 
-    def put(self, key, data, *args, **kwargs):
-        """Save data to Supabase, ensuring it is JSON-serializable."""
+    def put(self, key, data, retries=3, delay=1):
+        # Ensure retries is integer
+        if not isinstance(retries, int):
+            retries = 3
+
+        # Prepare safe data
         if isinstance(key, dict) and 'configurable' in key:
-            # Handle configuration data specially
             config_data = {
                 'tags': key.get('tags', []),
                 'metadata': dict(key.get('metadata', {})),
@@ -59,23 +58,35 @@ class SupabaseSaver:
                 'configurable': {
                     'checkpoint_ns': key['configurable'].get('checkpoint_ns', ''),
                     'thread_id': key['configurable'].get('thread_id', '')
-                    # Omit __pregel_runtime as it's not JSON serializable
                 }
             }
             safe_data = self._to_json_safe(config_data)
+            record_id = key['configurable'].get('thread_id', '')
         else:
             safe_data = self._to_json_safe(data)
-        try:
-            self.client.table(self.table_name).upsert({"id": str(key) if not isinstance(key, dict) else key['configurable'].get('thread_id', ''), "data": safe_data}).execute()
-        except Exception as e:
-            # Optional: log the error or re-raise with more context
-            raise RuntimeError(f"Failed to upsert key {key} to Supabase: {e}") from e
+            record_id = str(key)
+
+        # Attempt upsert with retries
+        for attempt in range(retries):
+            try:
+                self.client.table(self.table_name).upsert({
+                    "id": record_id,
+                    "data": safe_data
+                }).execute()
+                return
+            except httpx.RemoteProtocolError as e:
+                if attempt < retries - 1:
+                    time.sleep(delay * (2 ** attempt))  # exponential backoff
+                    continue
+                else:
+                    raise RuntimeError(f"Failed to upsert key {key} to Supabase after {retries} attempts: {e}") from e
+            except Exception as e:
+                raise RuntimeError(f"Failed to upsert key {key} to Supabase: {e}") from e
 
     def put_writes(self, *args, **kwargs):
         return self.put(*args, **kwargs)
 
     def get_tuple(self, key):
-        """Retrieve data from Supabase."""
         res = self.client.table(self.table_name).select("data").eq("id", key).execute()
         if res.data and len(res.data) > 0:
             return res.data[0]["data"]
@@ -83,6 +94,7 @@ class SupabaseSaver:
 
     def get_next_version(self, *args, **kwargs):
         return 1
+
 
 memory = SupabaseSaver(SUPABASE_URL, SUPABASE_KEY)
 
@@ -103,6 +115,7 @@ class AgentState(TypedDict):
     content: List[str]
     revision_number: int
     max_revisions: int
+    sources: List[dict]
 
 # ======================================
 # ✅ Prompts
@@ -117,61 +130,65 @@ class Queries(BaseModel):
     queries: List[str]
 
 # ======================================
-# ✅ Nodes (Graph Steps)
+# ✅ Helper function
+# ======================================
+def _extract_source_entry(r: dict):
+    """Normalize a Tavily search result into a dict with url, title and content."""
+    url = r.get("url") or r.get("link") or "Unknown Source"
+    title = r.get("title") or r.get("heading") or r.get("name") or "Untitled"
+    content = r.get("content") or r.get("text") or ""
+    return {"url": url, "title": title, "content": content}
+
+# ======================================
+# ✅ Nodes
 # ======================================
 def plan_node(state: AgentState):
-    messages = [
-        SystemMessage(content=PLAN_PROMPT),
-        HumanMessage(content=state["task"])
-    ]
+    messages = [SystemMessage(content=PLAN_PROMPT), HumanMessage(content=state["task"])]
     response = model.invoke(messages)
-    return {"plan": response.content}
+    return {"plan": response.content, "sources": state.get("sources", [])}
 
 def research_plan_node(state: AgentState):
-    queries = model.with_structured_output(Queries).invoke([
-        SystemMessage(content=RESEARCH_PLAN_PROMPT),
-        HumanMessage(content=state["task"])
-    ])
-    content = []
+    queries = model.with_structured_output(Queries).invoke([SystemMessage(content=RESEARCH_PLAN_PROMPT), HumanMessage(content=state["task"])])
+    content = state.get("content", [])
+    sources = state.get("sources", [])
     for q in queries.queries:
-        results = tavily.search(query=q, max_results=2)
-        for r in results["results"]:
-            content.append(r["content"])
-    return {"content": content}
+        results = tavily.search(query=q, max_results=2, search_depth="advanced")
+        for r in results.get("results", []):
+            content.append(r.get("content") or r.get("text") or "")
+            sources.append(_extract_source_entry(r))
+    return {"content": content, "sources": sources}
 
 def generation_node(state: AgentState):
-    content = "\n\n".join(state["content"] or [])
+    content_text = "\n\n".join(state.get("content", []) or [])
+    sources = state.get("sources", [])
+    sources_text = "\n".join(
+        ("- " + s.get("url", "") + (" (" + s.get("title", "") + ")" if s.get("title") else "")) for s in sources
+    )
     messages = [
-        SystemMessage(content=WRITER_PROMPT.format(content=content)),
-        HumanMessage(content=f"Topic: {state['task']}\n\nPlan: {state['plan']}")
+        SystemMessage(content=f"{WRITER_PROMPT}\nInclude sections and cite sources:\n{sources_text}"),
+        HumanMessage(content=f"Topic: {state['task']}\n\nPlan:\n{state['plan']}")
     ]
     response = model.invoke(messages)
-    return {"draft": response.content, "revision_number": state["revision_number"] + 1}
+    return {"draft": response.content, "revision_number": state["revision_number"] + 1, "sources": sources}
 
 def reflection_node(state: AgentState):
-    messages = [
-        SystemMessage(content=REFLECTION_PROMPT),
-        HumanMessage(content=state["draft"])
-    ]
+    messages = [SystemMessage(content=REFLECTION_PROMPT), HumanMessage(content=state["draft"])]
     response = model.invoke(messages)
-    return {"critique": response.content}
+    return {"critique": response.content, "sources": state.get("sources", [])}
 
 def research_critique_node(state: AgentState):
-    queries = model.with_structured_output(Queries).invoke([
-        SystemMessage(content=RESEARCH_CRITIQUE_PROMPT),
-        HumanMessage(content=state["critique"])
-    ])
-    content = state["content"] or []
+    queries = model.with_structured_output(Queries).invoke([SystemMessage(content=RESEARCH_CRITIQUE_PROMPT), HumanMessage(content=state["critique"])])
+    content = state.get("content", [])
+    sources = state.get("sources", [])
     for q in queries.queries:
-        results = tavily.search(query=q, max_results=2)
-        for r in results["results"]:
-            content.append(r["content"])
-    return {"content": content}
+        results = tavily.search(query=q, max_results=2, search_depth="advanced")
+        for r in results.get("results", []):
+            content.append(r.get("content") or r.get("text") or "")
+            sources.append(_extract_source_entry(r))
+    return {"content": content, "sources": sources}
 
 def should_continue(state):
-    if state["revision_number"] > state["max_revisions"]:
-        return END
-    return "reflect"
+    return END if state["revision_number"] > state["max_revisions"] else "reflect"
 
 # ======================================
 # ✅ Graph Construction
@@ -193,17 +210,19 @@ builder.add_conditional_edges("generate", should_continue, {END: END, "reflect":
 graph = builder.compile(checkpointer=memory)
 
 # ======================================
-# ✅ Run a test
+# ✅ Test Run
 # ======================================
 if __name__ == "__main__":
     thread = {"configurable": {"thread_id": "1"}}
-    for step in graph.stream({
+    initial_state = {
         "task": "What are the advantages and disadvantages of AI in education?",
         "max_revisions": 2,
         "revision_number": 1,
         "plan": "",
         "draft": "",
         "critique": "",
-        "content": []
-    }, thread):
+        "content": [],
+        "sources": []
+    }
+    for step in graph.stream(initial_state, thread):
         print(json.dumps(step, indent=2))
