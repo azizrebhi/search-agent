@@ -3,16 +3,16 @@ from dotenv import load_dotenv
 import os
 load_dotenv()
 
-import time
-import json
-from collections import ChainMap
-from typing import TypedDict, List
-
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel
 from tavily import TavilyClient
+from typing import TypedDict, List
+import json
+from collections import ChainMap
+import time
+
 from supabase import create_client
 
 # ======================================
@@ -23,7 +23,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 TABLE_NAME = "graph_state"
 
 # ======================================
-# ✅ Supabase persistence class
+# ✅ Supabase persistence class with retry
 # ======================================
 class SupabaseSaver:
     def __init__(self, url, key, table_name="graph_state"):
@@ -32,8 +32,8 @@ class SupabaseSaver:
 
     def _json_safe(self, obj):
         if isinstance(obj, ChainMap):
-            obj = dict(obj)
-        if isinstance(obj, dict):
+            return self._json_safe(dict(obj))
+        elif isinstance(obj, dict):
             return {str(k): self._json_safe(v) for k, v in obj.items()}
         elif isinstance(obj, (list, tuple, set)):
             return [self._json_safe(v) for v in obj]
@@ -42,7 +42,16 @@ class SupabaseSaver:
         else:
             return str(obj)
 
-    def put(self, key, data, retries=3, delay=1):
+    def put(self, key, data, *args, retries=3, delay=1, **kwargs):
+        """
+        Upsert data to Supabase with safe retries.
+        Accepts extra args/kwargs because LangGraph may pass metadata.
+        """
+        try:
+            retries = int(retries)
+        except (TypeError, ValueError):
+            retries = 3  # fallback if retries is invalid
+
         record_id = "unknown_id"
         if isinstance(key, dict) and 'configurable' in key:
             record_id = key['configurable'].get('thread_id', 'unknown_thread')
@@ -51,7 +60,7 @@ class SupabaseSaver:
 
         safe_data = self._json_safe(data)
 
-        for attempt in range(int(retries)):
+        for attempt in range(retries):
             try:
                 self.client.table(self.table_name).upsert({
                     "id": record_id,
@@ -82,8 +91,8 @@ memory = SupabaseSaver(SUPABASE_URL, SUPABASE_KEY)
 # ======================================
 # ✅ LLM & API Setup
 # ======================================
-model = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
 tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+model = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
 
 # ======================================
 # ✅ State Definition
@@ -111,17 +120,22 @@ class Queries(BaseModel):
     queries: List[str]
 
 # ======================================
-# ✅ Nodes (Graph Steps)
+# ✅ Helper to normalize Tavily results
 # ======================================
 def _extract_source_entry(r: dict):
-    """Normalize a Tavily search result into a dict with url, title, content."""
     url = r.get("url") or r.get("link") or "Unknown Source"
     title = r.get("title") or r.get("heading") or r.get("name") or "Untitled"
     content = r.get("content") or r.get("text") or ""
     return {"url": url, "title": title, "content": content}
 
+# ======================================
+# ✅ Nodes (Graph Steps)
+# ======================================
 def plan_node(state: AgentState):
-    messages = [SystemMessage(content=PLAN_PROMPT), HumanMessage(content=state["task"])]
+    messages = [
+        SystemMessage(content=PLAN_PROMPT),
+        HumanMessage(content=state["task"])
+    ]
     response = model.invoke(messages)
     return {"plan": response.content, "sources": state.get("sources", [])}
 
@@ -154,7 +168,10 @@ def generation_node(state: AgentState):
     return {"draft": response.content, "revision_number": state["revision_number"] + 1, "sources": sources}
 
 def reflection_node(state: AgentState):
-    messages = [SystemMessage(content=REFLECTION_PROMPT), HumanMessage(content=state["draft"])]
+    messages = [
+        SystemMessage(content=REFLECTION_PROMPT),
+        HumanMessage(content=state["draft"])
+    ]
     response = model.invoke(messages)
     return {"critique": response.content, "sources": state.get("sources", [])}
 
